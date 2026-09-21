@@ -335,7 +335,7 @@
                 "Singular": "RECOMMENDED SONG",
                 "Plural": "RECOMMENDED SONGS"
             },
-            "RecommendedSongsHelp": "Refresh List of Recommended Songs",
+            "RecommendedSongsHelp": "Refresh List of Random Songs",
             "PlayableSongs": "PLAYABLE SONGS",
             "RandomSong": "RANDOM SONG",
             "Sort": {
