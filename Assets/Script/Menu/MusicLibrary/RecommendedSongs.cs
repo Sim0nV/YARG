@@ -16,7 +16,7 @@ namespace YARG.Menu.MusicLibrary
         {
             var songs = new SongEntry[RECOMMEND_SONGS_COUNT];
             int index = 0;
-            AddMostPlayedSongs(songs, ref index);
+            // AddMostPlayedSongs(songs, ref index);
             AddRandomSongs(songs, ref index);
             return songs[..index];
         }
@@ -46,7 +46,8 @@ namespace YARG.Menu.MusicLibrary
 
             SongContainer.Sources.TryGetValue(_YARGSOURCE, out var yargSongs);
 
-            float yargSongRNG = yargSongs != null ? STARTING_RNG : 0;
+            // float yargSongRNG = yargSongs != null ? STARTING_RNG : 0;
+            float yargSongRNG = 0;
             while (index < RECOMMEND_SONGS_COUNT)
             {
                 SongEntry song;
