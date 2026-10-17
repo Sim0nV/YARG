@@ -108,7 +108,7 @@ namespace YARG.Menu.Filters
         [SerializeField]
         private RectTransform _rightContainer;
         [SerializeField]
-        private FilterEntryRow _filterEntryRowPrefab;
+        private GameObject _filterEntryRowPrefab;
 
         [Space]
         [SerializeField]
@@ -180,6 +180,7 @@ namespace YARG.Menu.Filters
         private int? _lastRightIndex;
 
         private FocusSide _focusSide = FocusSide.Left;
+        private FilterKey? _displayedFilterKey;
 
         public static Func<SongEntry, bool> ActiveFilterPredicate { get; private set; }
 
@@ -196,9 +197,98 @@ namespace YARG.Menu.Filters
 
         protected override void SingletonAwake()
         {
+            LoadRememberedFilters();
+
+            // Consume pointer events in empty areas of this overlay so they cannot
+            // reach Music Library controls (notably the search field) behind it.
+            var raycastBlocker = gameObject.GetComponent<Image>();
+            if (raycastBlocker == null)
+            {
+                raycastBlocker = gameObject.AddComponent<Image>();
+            }
+
+            raycastBlocker.color = Color.clear;
+            raycastBlocker.raycastTarget = true;
+
             // Match SettingsMenu behavior: initialized at startup, then hidden.
             gameObject.SetActive(false);
             _ready = true;
+        }
+
+        private static string SerializeFilterKey(FilterKey key)
+        {
+            return key.ContextId == Guid.Empty
+                ? key.Group.ToString()
+                : $"{key.Group}:{key.ContextId:D}";
+        }
+
+        private static bool TryDeserializeFilterKey(string value, out FilterKey key)
+        {
+            key = default;
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            int separator = value.IndexOf(':');
+            string groupValue = separator < 0 ? value : value[..separator];
+            if (!Enum.TryParse(groupValue, ignoreCase: true, out FilterGroup group))
+                return false;
+
+            Guid contextId = Guid.Empty;
+            if (separator >= 0 && !Guid.TryParse(value[(separator + 1)..], out contextId))
+                return false;
+
+            key = new FilterKey(group, contextId);
+            return true;
+        }
+
+        private static void LoadRememberedFilters()
+        {
+            if (SettingsManager.Settings?.RememberFilters.Value != true)
+                return;
+
+            var remembered = SettingsManager.Settings.RememberedFilters;
+            if (remembered == null || remembered.Count == 0)
+                return;
+
+            _savedFilters.Clear();
+            foreach (var entry in remembered)
+            {
+                if (!TryDeserializeFilterKey(entry.Key, out var key) || entry.Value == null)
+                    continue;
+
+                _savedFilters[key] = new Dictionary<string, bool>(
+                    entry.Value,
+                    StringComparer.OrdinalIgnoreCase);
+            }
+
+            _hasSavedFilters = _savedFilters.Count > 0;
+        }
+
+        private static void StoreRememberedFilters()
+        {
+            if (SettingsManager.Settings?.RememberFilters.Value != true)
+                return;
+
+            var remembered = SettingsManager.Settings.RememberedFilters ??= new();
+            remembered.Clear();
+            foreach (var entry in _savedFilters)
+            {
+                remembered[SerializeFilterKey(entry.Key)] = new Dictionary<string, bool>(
+                    entry.Value,
+                    StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        public static void PrepareForSettingsSave()
+        {
+            if (SettingsManager.Settings?.RememberFilters.Value != true)
+                return;
+
+            var menu = GetMenuInstance();
+            if (menu != null && menu._ready && menu.gameObject.activeInHierarchy)
+                menu.SaveFilters();
+            else
+                StoreRememberedFilters();
         }
 
         private void OnEnable()
@@ -338,13 +428,33 @@ namespace YARG.Menu.Filters
                 {
                     _rightNavGroup.ClearNavigatables();
                     _rightContainer.DestroyChildren();
+                    _displayedFilterKey = null;
                 }
                 return;
             }
 
+            ShowCategory(row);
+        }
+
+        private void OnCategoryClicked(FilterCategoryRow row)
+        {
+            if (row == null || !row.transform.IsChildOf(transform))
+                return;
+
+            ShowCategory(row);
+        }
+
+        private void ShowCategory(FilterCategoryRow row)
+        {
+            if (_rightContainer == null || row == null)
+                return;
+
+            if (_displayedFilterKey == row.Key && _rightContainer.childCount > 0)
+                return;
+
+            _displayedFilterKey = row.Key;
             _rightNavGroup.ClearNavigatables();
             _rightContainer.DestroyChildren();
-
             BuildOptionsFor(row.Key);
         }
 
@@ -416,6 +526,7 @@ namespace YARG.Menu.Filters
             string secondary = key.Group == FilterGroup.Genre ? Localize.Key("Menu.Filters.All") : string.Empty;
 
             row.Init(key, label, secondary);
+            row.Clicked += OnCategoryClicked;
             navGroup.AddNavigatable(row);
             return row;
         }
@@ -619,7 +730,13 @@ namespace YARG.Menu.Filters
             int rowIndex = 0;
             foreach (string value in values)
             {
-                var row = Instantiate(_filterEntryRowPrefab, _rightContainer);
+                var rowObject = Instantiate(_filterEntryRowPrefab, _rightContainer);
+                var row = rowObject.GetComponent<FilterEntryRow>();
+                if (row == null)
+                {
+                    Destroy(rowObject);
+                    continue;
+                }
                 _rightNavGroup.AddNavigatable(row.gameObject);
 
                 row.AssignIndex(rowIndex++);
@@ -638,7 +755,6 @@ namespace YARG.Menu.Filters
                 {
                     enabled[value] = toggleValue;
                     updateSummary?.Invoke();
-                    DisableRecommendationsIfFiltered();
                 };
             }
         }
@@ -724,6 +840,7 @@ namespace YARG.Menu.Filters
                     continue;
 
                 tmp.text = label;
+                NormalizeSettingLabelIndent(tmp);
                 break;
             }
         }
@@ -735,7 +852,23 @@ namespace YARG.Menu.Filters
 
             var tmp = row.GetComponentInChildren<TextMeshProUGUI>(true);
             if (tmp != null)
+            {
                 tmp.text = label;
+                NormalizeSettingLabelIndent(tmp);
+            }
+        }
+
+        private static void NormalizeSettingLabelIndent(TMP_Text label)
+        {
+            // Use the same inset mechanism as FilterCategoryRow so dropdown,
+            // toggle, and category labels share an exact left edge.
+            var margin = label.margin;
+            margin.x = 25f;
+            label.margin = margin;
+
+            var position = label.rectTransform.anchoredPosition;
+            position.x = 0f;
+            label.rectTransform.anchoredPosition = position;
         }
 
         private static int FindSortIndex(IReadOnlyList<SortAttribute> values, SortAttribute sort)
@@ -865,7 +998,7 @@ namespace YARG.Menu.Filters
                     RichTextUtils.StripRichTextTags(text)));
         }
         
-        private const int FilterLabelWrapLimit = 30;
+        private const int FilterLabelWrapLimit = 40;
 
         private static string WrapFilterLabel(string text)
         {
@@ -874,23 +1007,35 @@ namespace YARG.Menu.Filters
             string plain = RichTextUtils.StripRichTextTags(text);
             if (plain.Length <= FilterLabelWrapLimit) return text;
 
-            int breakVisibleIndex = FindLastWhitespaceIndex(plain, FilterLabelWrapLimit);
+            int breakVisibleIndex = FindBalancedWhitespaceIndex(plain, FilterLabelWrapLimit);
             if (breakVisibleIndex < 0)
                 breakVisibleIndex = FilterLabelWrapLimit;
 
             return InsertLineBreakAtVisibleIndex(text, breakVisibleIndex);
         }
 
-        private static int FindLastWhitespaceIndex(string text, int maxIndex)
+        private static int FindBalancedWhitespaceIndex(string text, int lineLimit)
         {
-            int last = -1;
-            int limit = Math.Min(text.Length - 1, maxIndex);
-            for (int i = 0; i <= limit; i++)
+            int minimum = Math.Max(1, text.Length - lineLimit);
+            int maximum = Math.Min(text.Length - 1, lineLimit);
+            int target = text.Length / 2;
+            int closest = -1;
+            int closestDistance = int.MaxValue;
+
+            for (int i = minimum; i <= maximum; i++)
             {
                 if (char.IsWhiteSpace(text[i]))
-                    last = i;
+                {
+                    int distance = Math.Abs(i - target);
+                    if (distance < closestDistance)
+                    {
+                        closest = i;
+                        closestDistance = distance;
+                    }
+                }
             }
-            return last;
+
+            return closest;
         }
 
         private static string InsertLineBreakAtVisibleIndex(string text, int visibleIndex)
@@ -1022,6 +1167,9 @@ namespace YARG.Menu.Filters
         private void RestoreSavedFilters()
         {
             if (!_hasSavedFilters)
+                LoadRememberedFilters();
+
+            if (!_hasSavedFilters)
                 return;
 
             foreach (var def in GetFilterDefs())
@@ -1046,6 +1194,7 @@ namespace YARG.Menu.Filters
             }
 
             _hasSavedFilters = true;
+            StoreRememberedFilters();
         }
 
         private void UpdateAllSummaries()
@@ -1328,7 +1477,6 @@ namespace YARG.Menu.Filters
         {
             SetAll(dict, value);
             updateSummary?.Invoke();
-            DisableRecommendationsIfFiltered();
 
             if (_rightContainer == null) return;
 
@@ -1336,33 +1484,6 @@ namespace YARG.Menu.Filters
                 row.SetToggleIsOn(value);
         }
 
-        private void DisableRecommendationsIfFiltered()
-        {
-            if (!SettingsManager.Settings.ShowRecommendedSongs.Value)
-                return;
-
-            foreach (var def in GetFilterDefs())
-            {
-                if (def.Group == FilterGroup.Playlist)
-                    continue;
-
-                var values = def.GetValues();
-                if (values.Count == 0)
-                    continue;
-
-                EnsureDefaults(def.Enabled, values);
-
-                int total = values.Count;
-                int selected = def.Enabled.Count(kvp => kvp.Value);
-                if (selected != total)
-                {
-                    SettingsManager.Settings.ShowRecommendedSongs.Value = false;
-                    if (_showRecommendationsToggle != null)
-                        _showRecommendationsToggle.SetIsOnWithoutNotify(false);
-                    break;
-                }
-            }
-        }
 #endregion
 
 #region Genres
@@ -1726,6 +1847,14 @@ namespace YARG.Menu.Filters
                 instrument = preferredInstrument.Value;
             }
 
+            if (instrument == Instrument.PartyVocals)
+            {
+                // Free Harmony uses harmony first and falls back to lead vocals for solo-only songs.
+                instrument = entry[Instrument.Harmony].IsActive()
+                    ? Instrument.Harmony
+                    : Instrument.Vocals;
+            }
+
             if (!entry.HasInstrument(instrument))
             {
                 intensity = default;
@@ -1914,21 +2043,25 @@ namespace YARG.Menu.Filters
             SaveFilters();
             ActiveFilterPredicate = BuildFilterPredicate();
 
+            // Remove the Filters scheme before refreshing the library. Refreshing first can
+            // push a library scheme above this one, causing this pop to remove the wrong scheme
+            // and leave controller input bound to the now-hidden Filters menu.
+            Navigator.Instance.PopScheme();
+
             var library = FindFirstObjectByType<MusicLibrary.MusicLibraryMenu>();
             if (library != null)
             {
-                library.SetSidebarDifficultiesVisible(true);
-                if (filtersChanged || showRecommendationsChanged || onlyShowPlayableChanged)
-                {
-                    library.RefreshAndReselect();
-                }
+                bool refreshLibrary = filtersChanged || showRecommendationsChanged || onlyShowPlayableChanged;
+                library.RestoreAfterFilters(refreshLibrary);
             }
 
-            Navigator.Instance.PopScheme();
             _leftNavGroup.SelectionChanged -= OnSelectionChanged;
             _rightNavGroup.SelectionChanged -= OnRightSelectionChanged;
 
-            MenuManager.Instance.ReactivateCurrentMenu();
+            // Filters is an overlay, so the underlying menu normally remains active.
+            // Avoid toggling it off and back on, which exposes the shared background
+            // for a frame while this overlay is closing.
+            MenuManager.Instance.ReactivateCurrentMenu(false);
         }
 
         private bool HaveFiltersChanged()
