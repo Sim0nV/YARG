@@ -126,7 +126,7 @@ namespace YARG.Menu.MusicLibrary
             }
 
             // float yargSongRNG = eligibleYargSongs is { Count: > 0 } ? STARTING_RNG : 0;
-            float yargSongRNG = 0;
+            float yargSongRNG = -1;
             while (index < RECOMMEND_SONGS_COUNT && eligibleSongs.Count > 0)
             {
                 SongEntry song;
